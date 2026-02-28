@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && npx tsc -p tsconfig.server.json",
+    "build": "vite build",
+    "build:server": "npx tsc -p tsconfig.server.json",
+    "build:all": "vite build && npx tsc -p tsconfig.server.json",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "node dist-server/index.js"
+    "start": "node --import tsx/esm server/index.ts"
   },
   "dependencies": {
     "@apollo/client": "^4.1.0",
@@ -67,6 +69,7 @@
     "sonner": "^1.7.4",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
+    "tsx": "^4.21.0",
     "vaul": "^0.9.9",
     "zod": "^3.25.76"
   },

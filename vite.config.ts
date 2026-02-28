@@ -2,12 +2,9 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { componentTaggerPlugin } from "./src/visual-edits/component-tagger-plugin.js";
-import { handleProxyRequest } from "./server/proxy";
 
-// Minimal plugin to log build-time and dev-time errors to console
 const logErrorsPlugin = () => ({
   name: "log-errors-plugin",
-  // Inject a small client-side script that mirrors Vite overlay errors to console
   transformIndexHtml() {
     return {
       tags: [
@@ -24,33 +21,21 @@ const logErrorsPlugin = () => ({
                 try { text = root.textContent || ''; } catch (_) {}
                 if (text && text.trim()) {
                   const msg = text.trim();
-                  // Use console.error to surface clearly in DevTools
                   console.error('[Vite Overlay]', msg);
-                  // Also mirror to parent iframe with structured payload
                   try {
                     if (window.parent && window.parent !== window) {
                       window.parent.postMessage({
                         type: 'ERROR_CAPTURED',
-                        error: {
-                          message: msg,
-                          stack: undefined,
-                          filename: undefined,
-                          lineno: undefined,
-                          colno: undefined,
-                          source: 'vite.overlay',
-                        },
+                        error: { message: msg, stack: undefined, filename: undefined, lineno: undefined, colno: undefined, source: 'vite.overlay' },
                         timestamp: Date.now(),
                       }, '*');
                     }
                   } catch (_) {}
                 }
               };
-
               const obs = new MutationObserver(() => logOverlay());
               obs.observe(document.documentElement, { childList: true, subtree: true });
-
               window.addEventListener('DOMContentLoaded', logOverlay);
-              // Attempt immediately as overlay may already exist
               logOverlay();
             } catch (e) {
               console.warn('[Vite Overlay logger failed]', e);
@@ -62,25 +47,26 @@ const logErrorsPlugin = () => ({
   },
 });
 
+// Dev-only HLS proxy plugin — loaded lazily so it never runs during `vite build`
 const hlsProxyPlugin = () => ({
   name: "hls-proxy-plugin",
-  configureServer(server) {
-    server.middlewares.use((req, res, next) => {
-      // @ts-ignore - IncomingMessage vs Connect.IncomingMessage
+  apply: "serve" as const,
+  async configureServer(server: any) {
+    const { handleProxyRequest } = await import("./server/proxy.js");
+    server.middlewares.use((req: any, res: any, next: any) => {
       if (handleProxyRequest(req, res)) return;
       next();
     });
   },
-  configurePreviewServer(server) {
-    server.middlewares.use((req, res, next) => {
-      // @ts-ignore - IncomingMessage vs Connect.IncomingMessage
+  async configurePreviewServer(server: any) {
+    const { handleProxyRequest } = await import("./server/proxy.js");
+    server.middlewares.use((req: any, res: any, next: any) => {
       if (handleProxyRequest(req, res)) return;
       next();
     });
   },
 });
 
-// https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
     host: "::",

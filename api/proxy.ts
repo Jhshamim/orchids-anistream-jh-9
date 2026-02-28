@@ -1,26 +1,18 @@
-import { IncomingMessage, ServerResponse } from 'http';
+import type { IncomingMessage, ServerResponse } from 'http';
 import https from 'https';
 import http from 'http';
-import { URL } from 'url';
 import zlib from 'zlib';
 
-// Vercel serverless — re-implements proxy inline (cannot import from ../server in edge runtime)
-// This file is intentionally self-contained.
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 50 });
 
-const PROXY_PATH = '/api/proxy';
-
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 128 });
-const httpAgent  = new http.Agent({ keepAlive: true, maxSockets: 128 });
-
-const manifestCache = new Map<string, { body: Buffer; ts: number }>();
-const MANIFEST_TTL  = 4000;
-
-function getSpooferHeaders(url: string): Record<string, string> {
+function getHeaders(url: string): Record<string, string> {
   let referer = 'https://hianime.to/';
-  let origin  = 'https://hianime.to';
-  if (url.includes('megacloud'))    { referer = 'https://megacloud.com/';     origin = 'https://megacloud.com'; }
+  let origin = 'https://hianime.to';
+  if (url.includes('megacloud'))    { referer = 'https://megacloud.com/';      origin = 'https://megacloud.com'; }
   else if (url.includes('rapid-cloud'))  { referer = 'https://rapid-cloud.co/';  origin = 'https://rapid-cloud.co'; }
   else if (url.includes('rabbitstream')) { referer = 'https://rabbitstream.net/'; origin = 'https://rabbitstream.net'; }
+  else if (url.includes('vizcloud'))     { referer = 'https://vizcloud.co/';      origin = 'https://vizcloud.co'; }
   return {
     'Referer': referer, 'Origin': origin,
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -33,27 +25,20 @@ function getSpooferHeaders(url: string): Record<string, string> {
   };
 }
 
-function rewriteM3U8(body: string, baseUrl: string): string {
+function rewriteM3U8(body: string, baseUrl: string, proxyBase: string): string {
+  const base = new URL(baseUrl);
   return body.split('\n').map(line => {
     const t = line.trim();
     if (!t) return line;
     if (t.startsWith('#')) {
       return line.replace(/URI="([^"]+)"/g, (_m, uri) => {
-        try { return `URI="${PROXY_PATH}?url=${encodeURIComponent(new URL(uri, baseUrl).href)}"`; }
+        try { return `URI="${proxyBase}?url=${encodeURIComponent(new URL(uri, base).href)}"`; }
         catch { return _m; }
       });
     }
-    try { return `${PROXY_PATH}?url=${encodeURIComponent(new URL(t, baseUrl).href)}`; }
+    try { return `${proxyBase}?url=${encodeURIComponent(new URL(t, base).href)}`; }
     catch { return line; }
   }).join('\n');
-}
-
-function decompress(res: IncomingMessage): NodeJS.ReadableStream {
-  const enc = res.headers['content-encoding'] || '';
-  if (enc.includes('br'))      return res.pipe(zlib.createBrotliDecompress());
-  if (enc.includes('gzip'))    return res.pipe(zlib.createGunzip());
-  if (enc.includes('deflate')) return res.pipe(zlib.createInflate());
-  return res;
 }
 
 function setCors(res: ServerResponse) {
@@ -63,59 +48,76 @@ function setCors(res: ServerResponse) {
   res.setHeader('Access-Control-Expose-Headers', '*');
 }
 
-export default function handler(req: IncomingMessage, res: ServerResponse) {
-  setCors(res);
-  if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return; }
+function fetch(targetUrl: string, res: ServerResponse, attempt = 0): void {
+  const isHttps = targetUrl.startsWith('https');
+  const client = isHttps ? https : http;
+  const agent = isHttps ? httpsAgent : httpAgent;
 
-  const urlObj = new URL(req.url!, `http://${req.headers.host}`);
-  let targetUrl = urlObj.searchParams.get('url');
-  if (!targetUrl) {
-    const b64 = urlObj.searchParams.get('b64');
-    if (b64) { try { targetUrl = Buffer.from(b64, 'base64').toString('utf-8'); } catch {} }
-  }
-  if (!targetUrl) { res.statusCode = 400; res.end('Missing url'); return; }
+  const req = client.request(targetUrl, { method: 'GET', headers: getHeaders(targetUrl), agent, timeout: 20000 }, (upstream) => {
+    const status = upstream.statusCode || 200;
 
-  const decoded  = decodeURIComponent(targetUrl);
-  const isHttps  = decoded.startsWith('https');
-  const client   = isHttps ? https : http;
-  const agent    = isHttps ? httpsAgent : httpAgent;
-  const headers  = getSpooferHeaders(decoded);
+    if ((status === 403 || status === 429 || status === 503) && attempt < 2) {
+      upstream.resume();
+      setTimeout(() => fetch(targetUrl, res, attempt + 1), 400 * (attempt + 1));
+      return;
+    }
 
-  const proxyReq = client.request(decoded, { method: 'GET', headers, agent, timeout: 15000 }, (proxyRes) => {
-    const ct = proxyRes.headers['content-type'] || '';
-    const isM3U8 = ct.includes('mpegurl') || decoded.includes('.m3u8') || decoded.includes('playlist');
+    setCors(res);
+    const ct = upstream.headers['content-type'] || '';
+    const isM3U8 = ct.includes('mpegurl') || targetUrl.includes('.m3u8');
 
     if (isM3U8) {
-      const cached = manifestCache.get(decoded);
-      if (cached && Date.now() - cached.ts < MANIFEST_TTL) {
-        proxyRes.resume();
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.end(cached.body);
-        return;
-      }
+      const enc = upstream.headers['content-encoding'] || '';
+      let stream: NodeJS.ReadableStream = upstream;
+      if (enc.includes('br')) stream = upstream.pipe(zlib.createBrotliDecompress());
+      else if (enc.includes('gzip')) stream = upstream.pipe(zlib.createGunzip());
+      else if (enc.includes('deflate')) stream = upstream.pipe(zlib.createInflate());
+
       const chunks: Buffer[] = [];
-      const stream = decompress(proxyRes);
       stream.on('data', (c: Buffer) => chunks.push(c));
       stream.on('end', () => {
-        const rewritten = rewriteM3U8(Buffer.concat(chunks).toString('utf-8'), decoded);
-        const buf = Buffer.from(rewritten, 'utf-8');
-        manifestCache.set(decoded, { body: buf, ts: Date.now() });
+        const rewritten = rewriteM3U8(Buffer.concat(chunks).toString(), targetUrl, '/api/proxy');
+        const out = Buffer.from(rewritten);
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Content-Length', out.length);
         res.setHeader('Cache-Control', 'no-cache');
-        res.end(buf);
+        res.statusCode = 200;
+        res.end(out);
       });
-      stream.on('error', () => { if (!res.headersSent) { res.statusCode = 502; res.end(); } });
+      stream.on('error', () => { if (!res.headersSent) { res.statusCode = 502; res.end('Stream error'); } });
     } else {
-      res.statusCode = proxyRes.statusCode || 200;
+      res.statusCode = status;
       res.setHeader('Content-Type', ct || 'application/octet-stream');
-      if (proxyRes.headers['content-length']) res.setHeader('Content-Length', proxyRes.headers['content-length']!);
+      if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
+      if (upstream.headers['content-range']) res.setHeader('Content-Range', upstream.headers['content-range'] as string);
       res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
-      proxyRes.pipe(res);
+      upstream.pipe(res);
     }
   });
 
-  proxyReq.on('timeout', () => { proxyReq.destroy(); if (!res.headersSent) { res.statusCode = 504; res.end('Timeout'); } });
-  proxyReq.on('error', () => { if (!res.headersSent) { res.statusCode = 502; res.end('Error'); } });
-  proxyReq.end();
+  req.on('timeout', () => {
+    req.destroy();
+    if (attempt < 2) fetch(targetUrl, res, attempt + 1);
+    else if (!res.headersSent) { res.statusCode = 504; res.end('Timeout'); }
+  });
+  req.on('error', (e) => {
+    if (attempt < 2) setTimeout(() => fetch(targetUrl, res, attempt + 1), 300);
+    else if (!res.headersSent) { res.statusCode = 502; res.end(`Error: ${e.message}`); }
+  });
+  req.end();
+}
+
+export default function handler(req: IncomingMessage, res: ServerResponse) {
+  if (req.method === 'OPTIONS') { setCors(res); res.statusCode = 204; res.end(); return; }
+
+  const host = req.headers.host || 'localhost';
+  const urlObj = new URL(req.url!, `https://${host}`);
+  let targetUrl = urlObj.searchParams.get('url') || '';
+  if (!targetUrl) {
+    const b64 = urlObj.searchParams.get('b64');
+    if (b64) try { targetUrl = Buffer.from(b64, 'base64').toString(); } catch {}
+  }
+  if (!targetUrl) { res.statusCode = 400; res.end('Missing url'); return; }
+
+  fetch(decodeURIComponent(targetUrl), res, 0);
 }
