@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Maximize, Minimize, AlertCircle, SkipForward, Play, Pause, Volume2, VolumeX, Settings, Server, Captions, CaptionsOff, RotateCcw, RotateCw, Gauge, Languages } from 'lucide-react';
+import { ArrowLeft, Maximize, Minimize, AlertCircle, SkipForward, Play, Pause, Volume2, VolumeX, Settings, Server, Captions, CaptionsOff, RotateCcw, RotateCw, Gauge, Languages, Square } from 'lucide-react';
 import { useAnimeDetails, useAnimeEpisodes } from '@/hooks/useAnime';
 import { useWatchHistory } from '@/hooks/useWatchHistory';
 import { WatchHistoryEntry } from '@/lib/db';
@@ -10,9 +10,10 @@ import Artplayer from 'artplayer';
 import Hls from 'hls.js';
 
 const API_BASE = 'https://animeapi-sage.vercel.app';
-const CORS_PROXY = 'https://m3u8-proxy-cors-inky-ten.vercel.app/cors?url=';
+const CORS_PROXY = '/api/proxy?url=';
 
 const PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+const ASPECT_RATIOS = ['Default', '16:9', '4:3', '2.35:1', 'Full'];
 
 interface StreamServer {
   type: string;
@@ -71,6 +72,8 @@ const VideoPlayer = () => {
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [showServerMenu, setShowServerMenu] = useState(false);
   const [showPlaybackSpeedMenu, setShowPlaybackSpeedMenu] = useState(false);
+  const [showAspectRatioMenu, setShowAspectRatioMenu] = useState(false);
+  const [aspectRatio, setAspectRatio] = useState('Default');
   const [seekFeedback, setSeekFeedback] = useState<'forward' | 'backward' | null>(null);
 
   const [isDragging, setIsDragging] = useState(false);
@@ -189,6 +192,28 @@ const VideoPlayer = () => {
     art.playbackRate = speed;
     setPlaybackSpeed(speed);
     setShowPlaybackSpeedMenu(false);
+  };
+
+  const changeAspectRatio = (ratio: string) => {
+    const art = artRef.current;
+    if (!art) return;
+    setAspectRatio(ratio);
+    setShowAspectRatioMenu(false);
+    
+    // Add persistent storage or ensure it's applied to the video element directly too
+    const video = art.video;
+    if (video) {
+      if (ratio === 'Full') {
+        video.style.objectFit = 'cover';
+        art.aspectRatio = '';
+      } else if (ratio === 'Default') {
+        video.style.objectFit = 'contain';
+        art.aspectRatio = '';
+      } else {
+        video.style.objectFit = 'contain';
+        art.aspectRatio = ratio.toLowerCase();
+      }
+    }
   };
 
   const toggleFullscreen = async () => {
@@ -402,11 +427,12 @@ const VideoPlayer = () => {
         autoMini: false,
         screenshot: false,
         setting: false,
-        loop: false,
-        flip: false,
-        playbackRate: false,
-        aspectRatio: false,
-        fullscreen: false,
+          loop: false,
+          flip: false,
+          playbackRate: false,
+          aspectRatio: true,
+          fullscreen: false,
+
         fullscreenWeb: false,
         subtitleOffset: false,
         miniProgressBar: false,
@@ -416,47 +442,57 @@ const VideoPlayer = () => {
         autoPlayback: false,
         theme: 'hsl(var(--primary))',
           cssVar: {},
-          ...(defaultSub ? {
-                subtitle: {
-                  url: defaultSub.file,
-                  type: 'vtt',
-                  encoding: 'utf-8',
-                  escape: false,
-                  style: {
-                    color: '#fff',
-                    fontSize: '20px',
-                    textShadow: '0 1px 4px rgba(0,0,0,0.8)',
+            ...(defaultSub ? {
+                  subtitle: {
+                    url: defaultSub.file,
+                    type: 'vtt',
+                    encoding: 'utf-8',
+                    escape: false,
+                    style: {
+                      color: '#fff',
+                      fontSize: '18px',
+                      textShadow: '0 2px 4px rgba(0,0,0,0.8)',
+                    },
                   },
-                },
-              } : {}),
+                } : {}),
         customType: {
           m3u8: function (video: HTMLVideoElement, url: string) {
                 if (Hls.isSupported()) {
                   const proxiedUrl = CORS_PROXY + encodeURIComponent(url);
                     const hls = new Hls({
                         enableWorker: true,
-                        lowLatencyMode: true,
-                        maxBufferLength: 15,
-                        maxMaxBufferLength: 30,
-                        maxBufferSize: 30 * 1000 * 1000,
-                        maxBufferHole: 0.5,
-                        highBufferWatchdogPeriod: 2,
-                        nudgeOffset: 0.1,
-                        nudgeMaxRetry: 5,
+                        lowLatencyMode: false,
+                        // Start playback quickly with small initial buffer
+                        maxBufferLength: 30,
+                        maxMaxBufferLength: 60,
+                        maxBufferSize: 60 * 1000 * 1000,
+                        maxBufferHole: 0.3,
+                        highBufferWatchdogPeriod: 3,
+                        nudgeOffset: 0.2,
+                        nudgeMaxRetry: 8,
                         startLevel: -1,
                         autoStartLoad: true,
-                        backBufferLength: 15,
-                        abrEwmaDefaultEstimate: 5000000,
-                        abrEwmaFastLive: 3,
-                        abrEwmaSlowLive: 9,
-                        abrEwmaFastVoD: 3,
-                        abrEwmaSlowVoD: 9,
-                        fragLoadingTimeOut: 15000,
-                        fragLoadingMaxRetry: 4,
-                        fragLoadingRetryDelay: 500,
-                        levelLoadingTimeOut: 8000,
-                        levelLoadingMaxRetry: 3,
+                        backBufferLength: 10,
+                        // ABR — start with high estimate so it picks good quality fast
+                        abrEwmaDefaultEstimate: 8000000,
+                        abrEwmaFastLive: 5,
+                        abrEwmaSlowLive: 10,
+                        abrEwmaFastVoD: 5,
+                        abrEwmaSlowVoD: 10,
+                        // Segment loading — short timeout, many retries with small delay
+                        fragLoadingTimeOut: 20000,
+                        fragLoadingMaxRetry: 6,
+                        fragLoadingRetryDelay: 200,
+                        fragLoadingMaxRetryTimeout: 4000,
+                        // Manifest / level loading
+                        levelLoadingTimeOut: 15000,
+                        levelLoadingMaxRetry: 4,
+                        levelLoadingRetryDelay: 200,
+                        manifestLoadingTimeOut: 15000,
+                        manifestLoadingMaxRetry: 3,
+                        manifestLoadingRetryDelay: 200,
                         startFragPrefetch: true,
+                        progressive: true,
                     xhrSetup: (xhr: XMLHttpRequest, xhrUrl: string) => {
                       const finalUrl = xhrUrl.startsWith(CORS_PROXY) ? xhrUrl : CORS_PROXY + encodeURIComponent(xhrUrl);
                       xhr.open('GET', finalUrl, true);
@@ -492,11 +528,18 @@ const VideoPlayer = () => {
                 });
 
                 hls.on(Hls.Events.ERROR, (_, data) => {
-                  if (data.fatal && mounted) {
-                    setError('Playback error. Try another server.');
-                    setIsLoading(false);
-                  }
-                });
+                    if (!mounted) return;
+                    if (!data.fatal) return; // ignore non-fatal stalls/retries
+                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                      // Try to recover network errors automatically
+                      hls.startLoad();
+                    } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                      hls.recoverMediaError();
+                    } else {
+                      setError('Playback error. Try another server.');
+                      setIsLoading(false);
+                    }
+                  });
               } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 video.src = url;
               }
@@ -506,13 +549,24 @@ const VideoPlayer = () => {
 
       artRef.current = art;
 
-    art.on('ready', () => {
-          if (!mounted) return;
-          setIsLoading(false);
-          if (savedProgress && savedProgress.timestamp > 10) {
-            art.currentTime = savedProgress.timestamp;
-          }
-        });
+      art.on('ready', () => {
+            if (!mounted) return;
+            setIsLoading(false);
+            if (savedProgress && savedProgress.timestamp > 10) {
+              art.currentTime = savedProgress.timestamp;
+            }
+            if (aspectRatio !== 'Default') {
+              const video = art.video;
+              if (video) {
+                if (aspectRatio === 'Full') {
+                  video.style.objectFit = 'cover';
+                } else {
+                  video.style.objectFit = 'contain';
+                  art.aspectRatio = aspectRatio.toLowerCase();
+                }
+              }
+            }
+          });
 
       art.on('play', () => {
         if (!mounted) return;
@@ -796,6 +850,12 @@ const VideoPlayer = () => {
       setShowAudioMenu(false);
       return;
     }
+    
+    // Update URL to persist choice
+    const newParams = new URLSearchParams(searchParams);
+    newParams.set('audio', type);
+    navigate({ search: newParams.toString() }, { replace: true });
+    
     setCurrentAudioType(type);
     setShowAudioMenu(false);
   };
@@ -862,12 +922,30 @@ const VideoPlayer = () => {
           .art-video-player .art-info {
             display: none !important;
           }
-          .art-video-player .art-subtitle {
-            font-size: 1.2rem !important;
-            text-shadow: 0 1px 4px rgba(0,0,0,0.8) !important;
-            bottom: 60px !important;
-            pointer-events: none !important;
-          }
+            .art-video-player .art-subtitle {
+              font-size: 0.72rem !important;
+              text-shadow: 0 1px 4px rgba(0,0,0,1) !important;
+              bottom: 6px !important;
+              padding: 2px 10px !important;
+              background: rgba(0, 0, 0, 0.55) !important;
+              border-radius: 4px !important;
+              left: 50% !important;
+              transform: translateX(-50%) !important;
+              width: fit-content !important;
+              max-width: 92% !important;
+              pointer-events: none !important;
+              text-align: center !important;
+              line-height: 1.35 !important;
+              font-weight: 500 !important;
+            }
+            @media (min-width: 768px) {
+              .art-video-player .art-subtitle {
+                font-size: 1.1rem !important;
+                bottom: 8px !important;
+                padding: 4px 18px !important;
+                max-width: 80% !important;
+              }
+            }
         .art-video-player video {
           object-fit: contain !important;
         }
@@ -1001,34 +1079,35 @@ const VideoPlayer = () => {
                   </div>
                 )}
               </div>
-              <div className="relative">
-                <button
-                  onClick={(e) => { e.stopPropagation(); setShowQualityMenu(!showQualityMenu); setShowServerMenu(false); setShowSubtitleMenu(false); setShowPlaybackSpeedMenu(false); setShowAudioMenu(false); }}
-                  className="w-10 h-10 rounded-full bg-black/20 flex items-center justify-center hover:bg-white/10 transition-colors"
-                >
-                  <Settings className="w-5 h-5" />
-                </button>
-              {showQualityMenu && qualityLevels.length > 0 && (
-                <div className="absolute right-0 top-12 bg-black/95 rounded-lg overflow-hidden min-w-[120px] border border-white/10 shadow-2xl">
-                  <div className="px-3 py-2 text-xs text-gray-400 border-b border-white/10 uppercase tracking-wider font-bold">Quality</div>
+                <div className="relative">
                   <button
-                    onClick={(e) => { e.stopPropagation(); setQuality(-1); }}
-                    className={`w-full px-4 py-2.5 text-left text-sm hover:bg-white/10 transition-colors ${currentQuality === -1 ? 'text-primary bg-white/5' : ''}`}
+                    onClick={(e) => { e.stopPropagation(); setShowQualityMenu(!showQualityMenu); setShowServerMenu(false); setShowSubtitleMenu(false); setShowPlaybackSpeedMenu(false); setShowAudioMenu(false); setShowAspectRatioMenu(false); }}
+                    className="w-10 h-10 rounded-full bg-black/20 flex items-center justify-center hover:bg-white/10 transition-colors"
                   >
-                    Auto
+                    <Settings className="w-5 h-5" />
                   </button>
-                  {qualityLevels.map((level) => (
+                {showQualityMenu && qualityLevels.length > 0 && (
+                  <div className="absolute right-0 top-12 bg-black/95 rounded-lg overflow-hidden min-w-[120px] border border-white/10 shadow-2xl">
+                    <div className="px-3 py-2 text-xs text-gray-400 border-b border-white/10 uppercase tracking-wider font-bold">Quality</div>
                     <button
-                      key={level.index}
-                      onClick={(e) => { e.stopPropagation(); setQuality(level.index); }}
-                      className={`w-full px-4 py-2.5 text-left text-sm hover:bg-white/10 transition-colors ${currentQuality === level.index ? 'text-primary bg-white/5' : ''}`}
+                      onClick={(e) => { e.stopPropagation(); setQuality(-1); }}
+                      className={`w-full px-4 py-2.5 text-left text-sm hover:bg-white/10 transition-colors ${currentQuality === -1 ? 'text-primary bg-white/5' : ''}`}
                     >
-                      {level.height}p
+                      Auto
                     </button>
-                  ))}
+                    {qualityLevels.map((level) => (
+                      <button
+                        key={level.index}
+                        onClick={(e) => { e.stopPropagation(); setQuality(level.index); }}
+                        className={`w-full px-4 py-2.5 text-left text-sm hover:bg-white/10 transition-colors ${currentQuality === level.index ? 'text-primary bg-white/5' : ''}`}
+                      >
+                        {level.height}p
+                      </button>
+                    ))}
+                  </div>
+                  )}
                 </div>
-                )}
-              </div>
+
               <button onClick={(e) => { e.stopPropagation(); toggleFullscreen(); }} className="w-10 h-10 rounded-full bg-black/20 flex items-center justify-center hover:bg-white/10 transition-colors">
                 {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
               </button>
@@ -1133,7 +1212,33 @@ const VideoPlayer = () => {
                 <div className="flex items-center gap-4">
                   <div className="relative">
                     <button
-                      onClick={(e) => { e.stopPropagation(); setShowPlaybackSpeedMenu(!showPlaybackSpeedMenu); setShowQualityMenu(false); setShowServerMenu(false); setShowSubtitleMenu(false); setShowAudioMenu(false); }}
+                      onClick={(e) => { e.stopPropagation(); setShowAspectRatioMenu(!showAspectRatioMenu); setShowQualityMenu(false); setShowServerMenu(false); setShowSubtitleMenu(false); setShowPlaybackSpeedMenu(false); setShowAudioMenu(false); }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-white/10 transition-colors text-sm font-bold"
+                    >
+                      <Square className="w-4 h-4 text-primary" />
+                      {aspectRatio}
+                    </button>
+                    {showAspectRatioMenu && (
+                      <div className="absolute right-0 bottom-full mb-2 bg-black/95 rounded-lg overflow-hidden min-w-[120px] border border-white/10 shadow-2xl">
+                        <div className="px-3 py-2 text-xs text-gray-400 border-b border-white/10 uppercase tracking-wider font-bold">Ratio</div>
+                        {ASPECT_RATIOS.map((ratio) => (
+                          <button
+                            key={ratio}
+                            onClick={(e) => { e.stopPropagation(); changeAspectRatio(ratio); }}
+                            className={`w-full px-4 py-2.5 text-left text-sm hover:bg-white/10 transition-colors ${
+                              aspectRatio === ratio ? 'text-primary bg-white/5' : ''
+                            }`}
+                          >
+                            {ratio}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="relative">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setShowPlaybackSpeedMenu(!showPlaybackSpeedMenu); setShowQualityMenu(false); setShowServerMenu(false); setShowSubtitleMenu(false); setShowAudioMenu(false); setShowAspectRatioMenu(false); }}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-white/10 transition-colors text-sm font-bold"
                     >
                       <Gauge className="w-4 h-4 text-primary" />

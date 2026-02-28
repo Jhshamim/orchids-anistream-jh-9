@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { componentTaggerPlugin } from "./src/visual-edits/component-tagger-plugin.js";
+import { handleProxyRequest } from "./server/proxy";
 
 // Minimal plugin to log build-time and dev-time errors to console
 const logErrorsPlugin = () => ({
@@ -61,6 +62,24 @@ const logErrorsPlugin = () => ({
   },
 });
 
+const hlsProxyPlugin = () => ({
+  name: "hls-proxy-plugin",
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      // @ts-ignore - IncomingMessage vs Connect.IncomingMessage
+      if (handleProxyRequest(req, res)) return;
+      next();
+    });
+  },
+  configurePreviewServer(server) {
+    server.middlewares.use((req, res, next) => {
+      // @ts-ignore - IncomingMessage vs Connect.IncomingMessage
+      if (handleProxyRequest(req, res)) return;
+      next();
+    });
+  },
+});
+
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
@@ -70,6 +89,7 @@ export default defineConfig(({ mode }) => ({
   plugins: [
     react(),
     logErrorsPlugin(),
+    hlsProxyPlugin(),
     mode === 'development' && componentTaggerPlugin(),
   ].filter(Boolean),
   resolve: {
